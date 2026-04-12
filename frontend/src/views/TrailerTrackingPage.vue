@@ -104,7 +104,7 @@
         :form="vehicleForm"
         :errors="vehicleErrors"
         :form-error="vehicleFormError"
-        :history-lines="vehicleEditor.historyLines"
+        :assignment-history="vehicleEditor.assignmentHistory"
         :report-meta="vehicleEditor.reportMeta"
         @close="closeVehicleEditor"
         @save="saveVehicleEditorModal"
@@ -127,7 +127,7 @@
 </template>
 
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import DataTable from 'datatables.net-vue3'
 import DataTablesCore from 'datatables.net-dt'
 import Responsive from 'datatables.net-responsive-dt'
@@ -168,7 +168,7 @@ const vehicleEditor = reactive({
   loading: false,
   saving: false,
   subtitle: '',
-  historyLines: [],
+  assignmentHistory: [],
   reportMeta: {
     load_count: 0,
     load_revenue: 0,
@@ -233,10 +233,6 @@ const driverLookups = reactive({
   statuses: [],
 })
 const driverToggle = ref(true)
-
-let chromeObserver = null
-let normalizeQueued = false
-let isNormalizingChrome = false
 
 function todayDateString() {
   const today = new Date()
@@ -322,12 +318,15 @@ function unassignedBadge() {
   return '<span class="badge-missing">No driver history</span>'
 }
 
-function historyLinesFromRow(row) {
+function vehicleAssignmentRowsFromRow(row) {
   const entries = Array.isArray(row?.driver_history_entries) ? row.driver_history_entries : []
 
-  return entries.map(
-      (entry) => `${entry.driver_name} - ${entry.assigned_date_display} - ${entry.unassigned_date_display}`
-  )
+  return entries.map((entry) => ({
+    date: entry?.assigned_date_display || '—',
+    action: 'Assigned',
+    driver: entry?.driver_name || '—',
+    current: String(entry?.unassigned_date_display || '').toLowerCase() === 'current',
+  }))
 }
 
 function clearReactiveObject(obj) {
@@ -521,7 +520,7 @@ function resetVehicleEditorState() {
   vehicleEditor.loading = false
   vehicleEditor.saving = false
   vehicleEditor.subtitle = ''
-  vehicleEditor.historyLines = []
+  vehicleEditor.assignmentHistory = []
   vehicleEditor.reportMeta = {
     load_count: 0,
     load_revenue: 0,
@@ -597,7 +596,7 @@ async function openVehicleEditor(row) {
   vehicleEditor.open = true
   vehicleEditor.loading = true
   vehicleEditor.subtitle = row?.vehicle_name || row?.vehicle_number || row?.trailer_display || `Trailer #${row?.id_vehicle ?? ''}`
-  vehicleEditor.historyLines = historyLinesFromRow(row)
+  vehicleEditor.assignmentHistory = vehicleAssignmentRowsFromRow(row)
   vehicleEditor.reportMeta = {
     load_count: row?.load_count ?? 0,
     load_revenue: row?.load_revenue ?? 0,
@@ -873,7 +872,12 @@ const options = {
   scrollX: true,
   autoWidth: false,
   order: [[0, 'asc']],
-  dom: 'lfrtip',
+  layout: {
+    topStart: 'pageLength',
+    topEnd: 'search',
+    bottomStart: 'info',
+    bottomEnd: 'paging',
+  },
   columnDefs: [
     { targets: '_all', className: 'dt-center' },
     { targets: 1, className: 'dt-center dt-driver-history' },
@@ -972,132 +976,6 @@ async function loadReport() {
   }
 }
 
-function teardownDataTableChromeObserver() {
-  if (chromeObserver) {
-    chromeObserver.disconnect()
-    chromeObserver = null
-  }
-}
-
-function queueNormalizeDataTableChrome() {
-  if (normalizeQueued) return
-
-  normalizeQueued = true
-
-  requestAnimationFrame(() => {
-    normalizeQueued = false
-    normalizeDataTableChrome()
-  })
-}
-
-function normalizeDataTableChrome() {
-  if (isNormalizingChrome) return
-
-  const host = tableWrap.value
-  if (!host) return
-
-  const wrapper = host.querySelector('.dataTables_wrapper, .dt-container')
-  if (!wrapper) return
-
-  const length = wrapper.querySelector('.dataTables_length, .dt-length')
-  const filter = wrapper.querySelector('.dataTables_filter, .dt-search')
-  const info = wrapper.querySelector('.dataTables_info, .dt-info')
-  const paginate = wrapper.querySelector('.dataTables_paginate, .dt-paging')
-  const tableNode = wrapper.querySelector('.dataTables_scroll, .dt-scroll, table.dataTable')
-
-  if (!tableNode) return
-
-  isNormalizingChrome = true
-
-  try {
-    let topBar = wrapper.querySelector('.custom-dt-toolbar')
-    if (!topBar) {
-      topBar = document.createElement('div')
-      topBar.className = 'custom-dt-toolbar'
-      wrapper.insertBefore(topBar, tableNode)
-    }
-
-    let topLeft = topBar.querySelector('.custom-dt-toolbar-left')
-    if (!topLeft) {
-      topLeft = document.createElement('div')
-      topLeft.className = 'custom-dt-toolbar-left'
-      topBar.appendChild(topLeft)
-    }
-
-    let topRight = topBar.querySelector('.custom-dt-toolbar-right')
-    if (!topRight) {
-      topRight = document.createElement('div')
-      topRight.className = 'custom-dt-toolbar-right'
-      topBar.appendChild(topRight)
-    }
-
-    let bottomBar = wrapper.querySelector('.custom-dt-footer')
-    if (!bottomBar) {
-      bottomBar = document.createElement('div')
-      bottomBar.className = 'custom-dt-footer'
-      if (tableNode.nextSibling) {
-        wrapper.insertBefore(bottomBar, tableNode.nextSibling)
-      } else {
-        wrapper.appendChild(bottomBar)
-      }
-    }
-
-    let bottomLeft = bottomBar.querySelector('.custom-dt-footer-left')
-    if (!bottomLeft) {
-      bottomLeft = document.createElement('div')
-      bottomLeft.className = 'custom-dt-footer-left'
-      bottomBar.appendChild(bottomLeft)
-    }
-
-    let bottomRight = bottomBar.querySelector('.custom-dt-footer-right')
-    if (!bottomRight) {
-      bottomRight = document.createElement('div')
-      bottomRight.className = 'custom-dt-footer-right'
-      bottomBar.appendChild(bottomRight)
-    }
-
-    if (length) topLeft.appendChild(length)
-    if (filter) topRight.appendChild(filter)
-    if (info) bottomLeft.appendChild(info)
-    if (paginate) bottomRight.appendChild(paginate)
-  } finally {
-    isNormalizingChrome = false
-  }
-}
-
-function setupDataTableChromeObserver() {
-  teardownDataTableChromeObserver()
-
-  const host = tableWrap.value
-  if (!host) return
-
-  const wrapper = host.querySelector('.dataTables_wrapper, .dt-container')
-  if (!wrapper) return
-
-  chromeObserver = new MutationObserver(() => {
-    if (isNormalizingChrome) return
-    queueNormalizeDataTableChrome()
-  })
-
-  chromeObserver.observe(wrapper, {
-    childList: true,
-    subtree: true,
-  })
-}
-
-async function refreshDataTableChrome() {
-  await nextTick()
-
-  setTimeout(() => {
-    queueNormalizeDataTableChrome()
-    setupDataTableChromeObserver()
-  }, 0)
-}
-
-watch(tableKey, async () => {
-  await refreshDataTableChrome()
-})
-
 onMounted(async () => {
   if (tableWrap.value) {
     tableWrap.value.addEventListener('click', handleTableClick)
@@ -1108,16 +986,12 @@ onMounted(async () => {
   } catch (error) {
     err.value = error?.message || 'Failed to load owners.'
   }
-
-  await refreshDataTableChrome()
 })
 
 onBeforeUnmount(() => {
   if (tableWrap.value) {
     tableWrap.value.removeEventListener('click', handleTableClick)
   }
-
-  teardownDataTableChromeObserver()
 })
 </script>
 
@@ -1365,74 +1239,47 @@ table.dataTable td.dt-driver-history {
   text-align: center !important;
 }
 
-div.dataTables_wrapper {
+div.dataTables_wrapper,
+div.dt-container {
   font-size: 12px;
   margin: 0 !important;
 }
 
-.custom-dt-toolbar,
-.custom-dt-footer {
+div.dt-container .dt-layout-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   width: 100%;
+  margin: 0;
 }
 
-.custom-dt-toolbar {
-  margin: 0 0 6px 0;
+div.dt-container .dt-layout-row:not(:last-child) {
+  margin-bottom: 6px;
 }
 
-.custom-dt-footer {
-  margin: 6px 0 0 0;
-}
-
-.custom-dt-toolbar-left,
-.custom-dt-footer-left {
+div.dt-container .dt-layout-cell {
   display: flex;
   align-items: center;
   min-width: 0;
 }
 
-.custom-dt-toolbar-right,
-.custom-dt-footer-right {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
+div.dt-container .dt-layout-end {
   margin-left: auto;
-  min-width: 0;
+  justify-content: flex-end;
 }
 
-.custom-dt-toolbar .dataTables_length,
-.custom-dt-toolbar .dataTables_filter,
-.custom-dt-footer .dataTables_info,
-.custom-dt-footer .dataTables_paginate,
-.custom-dt-toolbar .dt-length,
-.custom-dt-toolbar .dt-search,
-.custom-dt-footer .dt-info,
-.custom-dt-footer .dt-paging {
+div.dt-container .dt-search,
+div.dt-container .dt-length,
+div.dt-container .dt-info,
+div.dt-container .dt-paging {
   float: none !important;
   clear: none !important;
-  display: inline-flex !important;
-  align-items: center !important;
   margin: 0 !important;
-  padding: 0 !important;
-  width: auto !important;
-  white-space: nowrap !important;
 }
 
-.custom-dt-toolbar .dataTables_filter,
-.custom-dt-toolbar .dt-search,
-.custom-dt-footer .dataTables_paginate,
-.custom-dt-footer .dt-paging {
-  justify-content: flex-end !important;
-  text-align: right !important;
-}
-
-.custom-dt-toolbar .dataTables_length label,
-.custom-dt-toolbar .dataTables_filter label,
-.custom-dt-toolbar .dt-length label,
-.custom-dt-toolbar .dt-search label {
+div.dt-container .dt-search label,
+div.dt-container .dt-length label {
   display: inline-flex !important;
   align-items: center !important;
   gap: 6px !important;
@@ -1442,10 +1289,8 @@ div.dataTables_wrapper {
   line-height: 1 !important;
 }
 
-.custom-dt-toolbar .dataTables_filter input,
-.custom-dt-toolbar .dataTables_length select,
-.custom-dt-toolbar .dt-search input,
-.custom-dt-toolbar .dt-length select {
+div.dt-container .dt-search input,
+div.dt-container .dt-length select {
   border: 1px solid #cbd5e1;
   border-radius: 4px;
   background: #fff;
@@ -1457,18 +1302,15 @@ div.dataTables_wrapper {
   box-sizing: border-box;
 }
 
-.custom-dt-toolbar .dataTables_filter input,
-.custom-dt-toolbar .dt-search input {
+div.dt-container .dt-search input {
   width: 160px;
 }
 
-.custom-dt-toolbar .dataTables_length select,
-.custom-dt-toolbar .dt-length select {
+div.dt-container .dt-length select {
   width: 58px;
 }
 
-.custom-dt-footer .dataTables_paginate span,
-.custom-dt-footer .dt-paging nav {
+div.dt-container .dt-paging nav {
   display: inline-flex !important;
   align-items: center !important;
   flex-wrap: nowrap !important;
@@ -1476,8 +1318,7 @@ div.dataTables_wrapper {
   white-space: nowrap !important;
 }
 
-.custom-dt-footer .dataTables_paginate .paginate_button,
-.custom-dt-footer .dt-paging .dt-paging-button {
+div.dt-container .dt-paging .dt-paging-button {
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
@@ -1495,22 +1336,19 @@ div.dataTables_wrapper {
   white-space: nowrap !important;
 }
 
-.custom-dt-footer .dataTables_paginate .paginate_button.current,
-.custom-dt-footer .dt-paging .dt-paging-button.current {
+div.dt-container .dt-paging .dt-paging-button.current {
   background: #e5e7eb !important;
   border-color: #cbd5e1 !important;
   color: #111827 !important;
 }
 
-.custom-dt-footer .dataTables_paginate .paginate_button:hover,
-.custom-dt-footer .dt-paging .dt-paging-button:hover {
+div.dt-container .dt-paging .dt-paging-button:hover {
   background: #f3f4f6 !important;
   border-color: #cbd5e1 !important;
   color: #111827 !important;
 }
 
-.custom-dt-footer .dataTables_paginate .paginate_button.disabled,
-.custom-dt-footer .dt-paging .dt-paging-button.disabled {
+div.dt-container .dt-paging .dt-paging-button.disabled {
   opacity: 0.5 !important;
   cursor: not-allowed !important;
 }
@@ -1547,31 +1385,25 @@ div.dataTables_scrollBody {
     width: 100%;
   }
 
-  .custom-dt-toolbar,
-  .custom-dt-footer {
+  div.dt-container .dt-layout-row {
     display: block;
   }
 
-  .custom-dt-toolbar-right,
-  .custom-dt-footer-right {
+  div.dt-container .dt-layout-end {
     margin-left: 0;
+    justify-content: flex-start;
   }
 
-  .custom-dt-toolbar .dataTables_length,
-  .custom-dt-toolbar .dataTables_filter,
-  .custom-dt-footer .dataTables_info,
-  .custom-dt-footer .dataTables_paginate,
-  .custom-dt-toolbar .dt-length,
-  .custom-dt-toolbar .dt-search,
-  .custom-dt-footer .dt-info,
-  .custom-dt-footer .dt-paging {
+  div.dt-container .dt-search,
+  div.dt-container .dt-length,
+  div.dt-container .dt-info,
+  div.dt-container .dt-paging {
     display: block !important;
     text-align: left !important;
     margin-top: 4px !important;
   }
 
-  .custom-dt-footer .dataTables_paginate,
-  .custom-dt-footer .dt-paging {
+  div.dt-container .dt-paging {
     overflow-x: auto;
   }
 }
