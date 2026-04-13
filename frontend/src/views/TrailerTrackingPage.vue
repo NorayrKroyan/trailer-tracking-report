@@ -108,6 +108,7 @@
         :report-meta="vehicleEditor.reportMeta"
         @close="closeVehicleEditor"
         @save="saveVehicleEditorModal"
+        @delete="deleteVehicleEditorModal"
     />
 
     <TrailerContactDriverEditorModal
@@ -139,6 +140,7 @@ import {
   fetchVehicleEditor,
   saveDriverEditor,
   saveVehicleEditor,
+  deleteVehicleEditor,
 } from '../api/report'
 import TrailerVehicleEditorModal from '../components/TrailerVehicleEditorModal.vue'
 import TrailerContactDriverEditorModal from '../components/TrailerContactDriverEditorModal.vue'
@@ -178,9 +180,18 @@ const vehicleEditor = reactive({
 
 const vehicleForm = reactive({
   id_vehicle: null,
+  vehicle_type: 'Trailer',
+  vin: '',
+  year: '',
+  make: '',
+  model: '',
+  color: '',
   vehicle_number: '',
   vehicle_name: '',
+  registration_state: '',
   owner: '',
+  insurance_provider: 'Rental Agency',
+  process_rental_and_billing: false,
   license_plate: '',
 })
 
@@ -528,9 +539,18 @@ function resetVehicleEditorState() {
   }
 
   vehicleForm.id_vehicle = null
+  vehicleForm.vehicle_type = 'Trailer'
+  vehicleForm.vin = ''
+  vehicleForm.year = ''
+  vehicleForm.make = ''
+  vehicleForm.model = ''
+  vehicleForm.color = ''
   vehicleForm.vehicle_number = ''
   vehicleForm.vehicle_name = ''
+  vehicleForm.registration_state = ''
   vehicleForm.owner = ''
+  vehicleForm.insurance_provider = 'Rental Agency'
+  vehicleForm.process_rental_and_billing = false
   vehicleForm.license_plate = ''
 
   clearReactiveObject(vehicleErrors)
@@ -608,9 +628,18 @@ async function openVehicleEditor(row) {
     const vehicle = data.vehicle || {}
 
     vehicleForm.id_vehicle = vehicle.id_vehicle
+    vehicleForm.vehicle_type = vehicle.vehicle_type || 'Trailer'
+    vehicleForm.vin = vehicle.vin || ''
+    vehicleForm.year = vehicle.year || ''
+    vehicleForm.make = vehicle.make || ''
+    vehicleForm.model = vehicle.model || ''
+    vehicleForm.color = vehicle.color || ''
     vehicleForm.vehicle_number = vehicle.vehicle_number || ''
     vehicleForm.vehicle_name = vehicle.vehicle_name || ''
+    vehicleForm.registration_state = vehicle.registration_state || ''
     vehicleForm.owner = vehicle.owner || ''
+    vehicleForm.insurance_provider = vehicle.insurance_provider || 'Rental Agency'
+    vehicleForm.process_rental_and_billing = Boolean(Number(vehicle.process_rental_and_billing ?? 0))
     vehicleForm.license_plate = vehicle.license_plate || ''
   } catch (error) {
     vehicleFormError.value = error?.message || 'Failed to load vehicle editor.'
@@ -734,9 +763,18 @@ async function saveVehicleEditorModal() {
   try {
     await saveVehicleEditor(vehicleForm.id_vehicle, {
       vehicle: {
+        vehicle_type: vehicleForm.vehicle_type,
+        vin: vehicleForm.vin,
+        year: vehicleForm.year,
+        make: vehicleForm.make,
+        model: vehicleForm.model,
+        color: vehicleForm.color,
         vehicle_number: vehicleForm.vehicle_number,
         vehicle_name: vehicleForm.vehicle_name,
+        registration_state: vehicleForm.registration_state,
         owner: vehicleForm.owner,
+        insurance_provider: vehicleForm.insurance_provider,
+        process_rental_and_billing: vehicleForm.process_rental_and_billing ? 1 : 0,
         license_plate: vehicleForm.license_plate,
       },
     })
@@ -745,6 +783,31 @@ async function saveVehicleEditorModal() {
     closeVehicleEditor()
   } catch (error) {
     vehicleFormError.value = error?.message || 'Failed to save vehicle.'
+  } finally {
+    vehicleEditor.saving = false
+  }
+}
+
+async function deleteVehicleEditorModal() {
+  if (!vehicleForm.id_vehicle) {
+    return
+  }
+
+  const confirmed = window.confirm('Delete this vehicle?')
+
+  if (!confirmed) {
+    return
+  }
+
+  vehicleEditor.saving = true
+  vehicleFormError.value = ''
+
+  try {
+    await deleteVehicleEditor(vehicleForm.id_vehicle)
+    await loadReport()
+    closeVehicleEditor()
+  } catch (error) {
+    vehicleFormError.value = error?.message || 'Failed to delete vehicle.'
   } finally {
     vehicleEditor.saving = false
   }

@@ -16,15 +16,22 @@ class TrailerTrackingReportController extends Controller
 
     public function owners(): JsonResponse
     {
-        $owners = DB::table('vehicle as v')
+        $query = DB::table('vehicle as v')
             ->select('v.owner')
-            ->where('v.is_deleted', 0)
-            ->where('v.id_vehicle_type', 1)
             ->whereNotNull('v.owner')
             ->whereRaw("TRIM(v.owner) <> ''")
             ->distinct()
-            ->orderBy('v.owner')
-            ->pluck('owner');
+            ->orderBy('v.owner');
+
+        if ($this->hasColumn('vehicle', 'is_deleted')) {
+            $query->where('v.is_deleted', 0);
+        }
+
+        if ($this->hasColumn('vehicle', 'id_vehicle_type')) {
+            $query->where('v.id_vehicle_type', 1);
+        }
+
+        $owners = $query->pluck('owner');
 
         return response()->json([
             'owners' => $owners,
@@ -52,7 +59,7 @@ class TrailerTrackingReportController extends Controller
             ]);
         }
 
-        $rows = DB::table('vehicle as v')
+        $rowsQuery = DB::table('vehicle as v')
             ->selectRaw("
                 v.id_vehicle,
                 COALESCE(
@@ -64,11 +71,18 @@ class TrailerTrackingReportController extends Controller
                 v.vehicle_name,
                 v.owner
             ")
-            ->where('v.is_deleted', 0)
-            ->where('v.id_vehicle_type', 1)
             ->where('v.owner', $owner)
-            ->orderBy('trailer_display')
-            ->get();
+            ->orderBy('trailer_display');
+
+        if ($this->hasColumn('vehicle', 'is_deleted')) {
+            $rowsQuery->where('v.is_deleted', 0);
+        }
+
+        if ($this->hasColumn('vehicle', 'id_vehicle_type')) {
+            $rowsQuery->where('v.id_vehicle_type', 1);
+        }
+
+        $rows = $rowsQuery->get();
 
         $trailerIds = $rows->pluck('id_vehicle')
             ->filter()
@@ -149,13 +163,28 @@ class TrailerTrackingReportController extends Controller
         }
 
         $input = (array) $request->input('vehicle', []);
+        $updates = [];
 
-        $updates = $this->filterTableColumns('vehicle', [
-            'vehicle_number' => $this->nullIfBlank($input['vehicle_number'] ?? null),
-            'vehicle_name' => $this->nullIfBlank($input['vehicle_name'] ?? null),
-            'owner' => $this->nullIfBlank($input['owner'] ?? null),
-            'license_plate' => $this->nullIfBlank($input['license_plate'] ?? null),
-        ]);
+        $this->setVehicleTypeUpdate($updates, $input['vehicle_type'] ?? null);
+        $this->setFirstExistingColumn($updates, 'vehicle', ['vin'], $input['vin'] ?? null);
+        $this->setFirstExistingColumn($updates, 'vehicle', ['year', 'vehicle_year'], $input['year'] ?? null);
+        $this->setFirstExistingColumn($updates, 'vehicle', ['make', 'vehicle_make'], $input['make'] ?? null);
+        $this->setFirstExistingColumn($updates, 'vehicle', ['model', 'vehicle_model'], $input['model'] ?? null);
+        $this->setFirstExistingColumn($updates, 'vehicle', ['color', 'vehicle_color'], $input['color'] ?? null);
+        $this->setFirstExistingColumn($updates, 'vehicle', ['vehicle_number'], $input['vehicle_number'] ?? null);
+        $this->setFirstExistingColumn($updates, 'vehicle', ['vehicle_name'], $input['vehicle_name'] ?? null);
+        $this->setFirstExistingColumn($updates, 'vehicle', ['state', 'registration_state'], $input['registration_state'] ?? null);
+        $this->setFirstExistingColumn($updates, 'vehicle', ['owner'], $input['owner'] ?? null);
+        $this->setInsuranceProviderUpdates($updates, $input['insurance_provider'] ?? null);
+        $this->setFirstExistingColumn(
+            $updates,
+            'vehicle',
+            ['process_rental_and_billing', 'is_rental_billing_enabled'],
+            array_key_exists('process_rental_and_billing', $input)
+                ? (int) ((bool) $input['process_rental_and_billing'])
+                : null
+        );
+        $this->setFirstExistingColumn($updates, 'vehicle', ['license_plate', 'system_plate'], $input['license_plate'] ?? null);
 
         if (!empty($updates)) {
             DB::table('vehicle')
@@ -166,6 +195,31 @@ class TrailerTrackingReportController extends Controller
         return response()->json([
             'message' => 'Vehicle updated successfully.',
             'vehicle' => $this->loadVehicleRecord($vehicleId),
+        ]);
+    }
+
+    public function deleteVehicle(int $vehicleId): JsonResponse
+    {
+        $vehicle = $this->loadVehicleRecord($vehicleId);
+
+        if (!$vehicle) {
+            return response()->json([
+                'message' => 'Vehicle not found.',
+            ], 404);
+        }
+
+        if ($this->hasColumn('vehicle', 'is_deleted')) {
+            DB::table('vehicle')
+                ->where('id_vehicle', $vehicleId)
+                ->update(['is_deleted' => 1]);
+        } else {
+            DB::table('vehicle')
+                ->where('id_vehicle', $vehicleId)
+                ->delete();
+        }
+
+        return response()->json([
+            'message' => 'Vehicle deleted successfully.',
         ]);
     }
 
@@ -229,28 +283,27 @@ class TrailerTrackingReportController extends Controller
                 'tcs_fuel_card_number' => $this->nullIfBlank($driverInput['tcs_fuel_card_number'] ?? null),
                 'tcs_fuel_card_pin' => $this->nullIfBlank($driverInput['tcs_fuel_card_pin'] ?? null),
                 'tcs_fuel_card_limit' => $this->nullIfBlank($driverInput['tcs_fuel_card_limit'] ?? null),
+                'tcs_fuel_card_last_updated' => $this->nullIfBlank($driverInput['tcs_fuel_card_last_updated'] ?? null),
             ]);
-
-            if (empty($driverUpdates)) {
-                return;
-            }
 
             $existingDriverId = $record['driver']['id_driver'] ?? null;
 
             if ($existingDriverId) {
-                DB::table('driver')
-                    ->where('id_driver', $existingDriverId)
-                    ->update($driverUpdates);
+                if (!empty($driverUpdates)) {
+                    DB::table('driver')
+                        ->where('id_driver', $existingDriverId)
+                        ->update($driverUpdates);
+                }
 
                 return;
             }
 
-            $insert = array_merge(
-                ['id_contact' => $contactId],
-                $driverUpdates
-            );
-
-            DB::table('driver')->insert($insert);
+            if (!empty($driverUpdates)) {
+                DB::table('driver')->insert(array_merge(
+                    ['id_contact' => $contactId],
+                    $driverUpdates
+                ));
+            }
         });
 
         $fresh = $this->loadDriverEditorRecord($contactId);
@@ -263,7 +316,7 @@ class TrailerTrackingReportController extends Controller
         ]);
     }
 
-    private function driverEditorLookups(): array
+    protected function driverEditorLookups(): array
     {
         return [
             'states' => $this->stateOptions(),
@@ -274,32 +327,216 @@ class TrailerTrackingReportController extends Controller
         ];
     }
 
-    private function loadVehicleRecord(int $vehicleId): ?array
+    protected function loadVehicleRecord(int $vehicleId): ?array
     {
         $cols = $this->tableColumns('vehicle');
 
         $selects = ['id_vehicle'];
-        foreach (['vehicle_number', 'vehicle_name', 'owner', 'license_plate'] as $col) {
-            if (isset($cols[$col])) {
-                $selects[] = $col;
+
+        foreach ([
+                     'id_vehicle_type',
+                     'vehicle_type',
+                     'vin',
+                     'year',
+                     'vehicle_year',
+                     'make',
+                     'vehicle_make',
+                     'model',
+                     'vehicle_model',
+                     'color',
+                     'vehicle_color',
+                     'vehicle_number',
+                     'vehicle_name',
+                     'state',
+                     'registration_state',
+                     'owner',
+                     'insurance_provided_by',
+                     'insurance_provider',
+                     'process_rental_and_billing',
+                     'is_rental_billing_enabled',
+                     'license_plate',
+                     'system_plate',
+                     'is_deleted',
+                 ] as $column) {
+            if (isset($cols[$column])) {
+                $selects[] = $column;
             }
         }
 
-        $query = DB::table('vehicle')->select($selects)->where('id_vehicle', $vehicleId);
+        $query = DB::table('vehicle')
+            ->select($selects)
+            ->where('id_vehicle', $vehicleId);
 
-        if (isset($cols['id_vehicle_type'])) {
-            $query->where('id_vehicle_type', 1);
-        }
         if (isset($cols['is_deleted'])) {
             $query->where('is_deleted', 0);
         }
 
         $row = $query->first();
 
-        return $row ? (array) $row : null;
+        if (!$row) {
+            return null;
+        }
+
+        $row = (array) $row;
+
+        $vehicleTypeRaw = $this->getFirstExistingValue($row, ['vehicle_type', 'id_vehicle_type']);
+        $vehicleType = 'Trailer';
+
+        if ($vehicleTypeRaw !== null) {
+            if (is_numeric($vehicleTypeRaw)) {
+                $vehicleType = ((int) $vehicleTypeRaw === 2) ? 'Truck' : 'Trailer';
+            } else {
+                $normalized = trim((string) $vehicleTypeRaw);
+                $vehicleType = $normalized !== '' ? ucfirst(strtolower($normalized)) : 'Trailer';
+            }
+        }
+
+        return [
+            'id_vehicle' => $row['id_vehicle'] ?? null,
+            'vehicle_type' => $vehicleType,
+            'vin' => $this->getFirstExistingValue($row, ['vin']) ?? '',
+            'year' => $this->getFirstExistingValue($row, ['year', 'vehicle_year']) ?? '',
+            'make' => $this->getFirstExistingValue($row, ['make', 'vehicle_make']) ?? '',
+            'model' => $this->getFirstExistingValue($row, ['model', 'vehicle_model']) ?? '',
+            'color' => $this->getFirstExistingValue($row, ['color', 'vehicle_color']) ?? '',
+            'vehicle_number' => $this->getFirstExistingValue($row, ['vehicle_number']) ?? '',
+            'vehicle_name' => $this->getFirstExistingValue($row, ['vehicle_name']) ?? '',
+            'registration_state' => $this->getFirstExistingValue($row, ['state', 'registration_state']) ?? '',
+            'owner' => $this->getFirstExistingValue($row, ['owner']) ?? '',
+            'insurance_provider' => $this->readInsuranceProviderValue($row),
+            'process_rental_and_billing' => (bool) ($this->getFirstExistingValue($row, ['process_rental_and_billing', 'is_rental_billing_enabled']) ?? false),
+            'license_plate' => $this->getFirstExistingValue($row, ['license_plate', 'system_plate']) ?? '',
+        ];
     }
 
-    private function loadDriverEditorRecord(int $contactId): ?array
+    protected function setVehicleTypeUpdate(array &$updates, mixed $value): void
+    {
+        if ($this->hasColumn('vehicle', 'id_vehicle_type')) {
+            $normalized = strtolower(trim((string) $value));
+
+            if ($normalized === 'truck') {
+                $updates['id_vehicle_type'] = 2;
+                return;
+            }
+
+            if ($normalized === 'trailer') {
+                $updates['id_vehicle_type'] = 1;
+                return;
+            }
+
+            if ($value !== null && $value !== '' && is_numeric($value)) {
+                $updates['id_vehicle_type'] = (int) $value;
+            }
+
+            return;
+        }
+
+        if ($this->hasColumn('vehicle', 'vehicle_type')) {
+            $updates['vehicle_type'] = $this->nullIfBlank($value);
+        }
+    }
+
+    protected function setInsuranceProviderUpdates(array &$updates, mixed $value): void
+    {
+        if ($this->hasColumn('vehicle', 'insurance_provider')) {
+            $numericValue = $this->insuranceProviderToInteger($value);
+
+            if ($numericValue !== null) {
+                $updates['insurance_provider'] = $numericValue;
+            }
+        }
+
+        if ($this->hasColumn('vehicle', 'insurance_provided_by')) {
+            $labelValue = $this->insuranceProviderToLabel($value);
+
+            if ($labelValue !== null || $value === null || $value === '') {
+                $updates['insurance_provided_by'] = $labelValue;
+            }
+        }
+    }
+
+    protected function readInsuranceProviderValue(array $row): string
+    {
+        if (array_key_exists('insurance_provided_by', $row) && $row['insurance_provided_by'] !== null && $row['insurance_provided_by'] !== '') {
+            return (string) $row['insurance_provided_by'];
+        }
+
+        if (array_key_exists('insurance_provider', $row)) {
+            return $this->insuranceProviderToLabel($row['insurance_provider']) ?? '';
+        }
+
+        return '';
+    }
+
+    protected function insuranceProviderToInteger(mixed $value): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_numeric($value)) {
+            return (int) $value;
+        }
+
+        $normalized = strtolower(trim((string) $value));
+
+        return match ($normalized) {
+            'rental agency' => 1,
+            'carrier' => 2,
+            'owner' => 3,
+            'company' => 4,
+            default => null,
+        };
+    }
+
+    protected function insuranceProviderToLabel(mixed $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (!is_numeric($value)) {
+            $normalized = trim((string) $value);
+            return $normalized === '' ? null : $normalized;
+        }
+
+        return match ((int) $value) {
+            1 => 'Rental Agency',
+            2 => 'Carrier',
+            3 => 'Owner',
+            4 => 'Company',
+            default => null,
+        };
+    }
+
+    protected function setFirstExistingColumn(array &$updates, string $table, array $candidates, mixed $value): void
+    {
+        foreach ($candidates as $column) {
+            if ($this->hasColumn($table, $column)) {
+                $updates[$column] = is_bool($value) || is_int($value) ? $value : $this->nullIfBlank($value);
+                return;
+            }
+        }
+    }
+
+    protected function getFirstExistingValue(array $row, array $candidates): mixed
+    {
+        foreach ($candidates as $column) {
+            if (array_key_exists($column, $row)) {
+                return $row[$column];
+            }
+        }
+
+        return null;
+    }
+
+    protected function hasColumn(string $table, string $column): bool
+    {
+        $columns = $this->tableColumns($table);
+        return isset($columns[$column]);
+    }
+
+    protected function loadDriverEditorRecord(int $contactId): ?array
     {
         $contactCols = $this->tableColumns('contact');
         $driverCols = $this->tableColumns('driver');
@@ -381,10 +618,8 @@ class TrailerTrackingReportController extends Controller
         ];
     }
 
-    private function loadVehicleOptions(int $vehicleType): array
+    protected function loadVehicleOptions(int $vehicleType): array
     {
-        $cols = $this->tableColumns('vehicle');
-
         $query = DB::table('vehicle as v')
             ->selectRaw("
                 v.id_vehicle,
@@ -395,10 +630,11 @@ class TrailerTrackingReportController extends Controller
                 ) AS label
             ");
 
-        if (isset($cols['is_deleted'])) {
+        if ($this->hasColumn('vehicle', 'is_deleted')) {
             $query->where('v.is_deleted', 0);
         }
-        if (isset($cols['id_vehicle_type'])) {
+
+        if ($this->hasColumn('vehicle', 'id_vehicle_type')) {
             $query->where('v.id_vehicle_type', $vehicleType);
         }
 
@@ -412,7 +648,7 @@ class TrailerTrackingReportController extends Controller
             ->all();
     }
 
-    private function loadCarrierOptions(): array
+    protected function loadCarrierOptions(): array
     {
         if (!Schema::hasTable('carrier')) {
             return [];
@@ -425,16 +661,14 @@ class TrailerTrackingReportController extends Controller
         }
 
         $query = DB::table('carrier')
-            ->select('id_carrier', 'carrier_name');
+            ->select('id_carrier', 'carrier_name')
+            ->whereNotNull('carrier_name')
+            ->whereRaw("TRIM(carrier_name) <> ''")
+            ->orderBy('carrier_name');
 
         if (isset($cols['is_deleted'])) {
             $query->where('is_deleted', 0);
         }
-
-        $query
-            ->whereNotNull('carrier_name')
-            ->whereRaw("TRIM(carrier_name) <> ''")
-            ->orderBy('carrier_name');
 
         return $query
             ->get()
@@ -445,7 +679,7 @@ class TrailerTrackingReportController extends Controller
             ->all();
     }
 
-    private function loadProjectOptions(): array
+    protected function loadProjectOptions(): array
     {
         if (!Schema::hasTable('projects')) {
             return [];
@@ -458,14 +692,13 @@ class TrailerTrackingReportController extends Controller
         }
 
         $query = DB::table('projects')
-            ->select('idprojects', 'projectname');
+            ->select('idprojects', 'projectname')
+            ->whereNotNull('projectname')
+            ->whereRaw("TRIM(projectname) <> ''");
 
         if (isset($cols['is_deleted'])) {
             $query->where('is_deleted', 0);
         }
-
-        $query->whereNotNull('projectname')
-            ->whereRaw("TRIM(projectname) <> ''");
 
         if (isset($cols['orderby'])) {
             $query->orderBy('orderby');
@@ -482,7 +715,7 @@ class TrailerTrackingReportController extends Controller
             ->all();
     }
 
-    private function stateOptions(): array
+    protected function stateOptions(): array
     {
         return [
             ['state_code' => '', 'state_name' => ''],
@@ -539,7 +772,7 @@ class TrailerTrackingReportController extends Controller
         ];
     }
 
-    private function tableColumns(string $table): array
+    protected function tableColumns(string $table): array
     {
         if (!isset($this->columnCache[$table])) {
             $this->columnCache[$table] = array_flip(Schema::getColumnListing($table));
@@ -548,7 +781,7 @@ class TrailerTrackingReportController extends Controller
         return $this->columnCache[$table];
     }
 
-    private function filterTableColumns(string $table, array $data): array
+    protected function filterTableColumns(string $table, array $data): array
     {
         $cols = $this->tableColumns($table);
 
@@ -560,7 +793,7 @@ class TrailerTrackingReportController extends Controller
     /**
      * @return array{0:string,1:string}
      */
-    private function resolveDateRange(Request $request): array
+    protected function resolveDateRange(Request $request): array
     {
         $end = $this->parseDateOrFallback(
             $request->query('end_date'),
@@ -579,7 +812,7 @@ class TrailerTrackingReportController extends Controller
         return [$start->toDateString(), $end->toDateString()];
     }
 
-    private function parseDateOrFallback(mixed $value, Carbon $fallback): Carbon
+    protected function parseDateOrFallback(mixed $value, Carbon $fallback): Carbon
     {
         try {
             if (!is_string($value) || trim($value) === '') {
@@ -596,7 +829,7 @@ class TrailerTrackingReportController extends Controller
      * @param Collection<int, int> $trailerIds
      * @return array<int, array<int, array<string, mixed>>>
      */
-    private function buildDriverHistoryByTrailer(Collection $trailerIds, string $startDate, string $endDate): array
+    protected function buildDriverHistoryByTrailer(Collection $trailerIds, string $startDate, string $endDate): array
     {
         if ($trailerIds->isEmpty()) {
             return [];
@@ -604,8 +837,11 @@ class TrailerTrackingReportController extends Controller
 
         $historyRows = DB::table('driver_vehicle_history as dvh')
             ->leftJoin('contact as c', function ($join) {
-                $join->on('c.id_contact', '=', 'dvh.contact_id')
-                    ->where('c.is_deleted', 0);
+                $join->on('c.id_contact', '=', 'dvh.contact_id');
+
+                if ($this->hasColumn('contact', 'is_deleted')) {
+                    $join->where('c.is_deleted', 0);
+                }
             })
             ->selectRaw("
                 dvh.id,
@@ -703,7 +939,7 @@ class TrailerTrackingReportController extends Controller
      * @param Collection<int, object> $trailers
      * @return array<int, array{load_count:int, load_revenue:float, recent_job:?string}>
      */
-    private function buildLoadDataByTrailer(Collection $trailers, string $startDate, string $endDate): array
+    protected function buildLoadDataByTrailer(Collection $trailers, string $startDate, string $endDate): array
     {
         if ($trailers->isEmpty()) {
             return [];
@@ -801,7 +1037,7 @@ class TrailerTrackingReportController extends Controller
         return $result;
     }
 
-    private function normalizeTrailerKey(mixed $value): ?string
+    protected function normalizeTrailerKey(mixed $value): ?string
     {
         if ($value === null) {
             return null;
@@ -812,7 +1048,7 @@ class TrailerTrackingReportController extends Controller
         return $normalized === '' ? null : $normalized;
     }
 
-    private function safeDateString(mixed $value): ?string
+    protected function safeDateString(mixed $value): ?string
     {
         try {
             if ($value === null || $value === '') {
@@ -825,7 +1061,7 @@ class TrailerTrackingReportController extends Controller
         }
     }
 
-    private function displayDate(?string $date): string
+    protected function displayDate(?string $date): string
     {
         if ($date === null || $date === '') {
             return '—';
@@ -838,7 +1074,7 @@ class TrailerTrackingReportController extends Controller
         }
     }
 
-    private function nullIfBlank(mixed $value): ?string
+    protected function nullIfBlank(mixed $value): ?string
     {
         if ($value === null) {
             return null;

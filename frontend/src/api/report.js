@@ -53,6 +53,12 @@ export async function saveVehicleEditor(vehicleId, payload) {
     })
 }
 
+export async function deleteVehicleEditor(vehicleId) {
+    return requestJson(`${REPORT_URL}/vehicle/${vehicleId}`, {
+        method: 'DELETE',
+    })
+}
+
 export async function fetchDriverEditor(contactId) {
     return requestJson(`${REPORT_URL}/driver/${contactId}`)
 }
